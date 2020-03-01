@@ -13,12 +13,22 @@ void matchDescriptors(std::vector<cv::KeyPoint> &kPtsSource, std::vector<cv::Key
 
     if (matcherType.compare("MAT_BF") == 0)
     {
-        int normType = cv::NORM_HAMMING;
+        int normType = descriptorType.compare("DES_BINARY") == 0 ? cv::NORM_HAMMING : cv::NORM_L2;
+        if(descriptorType.compare("SIFT") == 0 && normType == cv::NORM_HAMMING){
+            std::cerr << "Using L2 norm since SIFT not support hamming distance " << std::endl;
+            normType = cv::NORM_L2;
+        }
         matcher = cv::BFMatcher::create(normType, crossCheck);
     }
     else if (matcherType.compare("MAT_FLANN") == 0)
     {
-        // ...
+        matcher = cv::DescriptorMatcher::create(cv::DescriptorMatcher::FLANNBASED);
+        if(descSource.type()!=CV_32F) {
+            descSource.convertTo(descSource, CV_32F);
+        }
+        if(descRef.type()!=CV_32F) {
+            descRef.convertTo(descRef, CV_32F);
+        }
     }
 
     // perform matching task
@@ -29,84 +39,149 @@ void matchDescriptors(std::vector<cv::KeyPoint> &kPtsSource, std::vector<cv::Key
     }
     else if (selectorType.compare("SEL_KNN") == 0)
     { // k nearest neighbors (k=2)
-
-        // ...
+        std::vector<std::vector<cv::DMatch>> knn_matches;
+        matcher->knnMatch( descSource, descRef, knn_matches, 2 );
+        const float ratio_thresh = 0.8f;
+        for (size_t i = 0; i < knn_matches.size(); i++)
+        {
+            if (knn_matches[i][0].distance < ratio_thresh * knn_matches[i][1].distance)
+            {
+                matches.push_back(knn_matches[i][0]);
+            }
+        }
     }
 }
 
 // Use one of several types of state-of-art descriptors to uniquely identify keypoints
-void descKeypoints(vector<cv::KeyPoint> &keypoints, cv::Mat &img, cv::Mat &descriptors, string descriptorType)
+cv::Ptr<cv::DescriptorExtractor> extractor;
+void descKeypointsInit(const std::string descriptorType){
+    // select appropriate descriptor 
+    // BRIEF, ORB, FREAK, AKAZE, SIFT
+            // Init only once since expecially brisk setup time is huge!        
+        if (descriptorType.compare("BRISK") == 0)
+        {
+
+            int threshold = 30;        // FAST/AGAST detection threshold score.
+            int octaves = 3;           // detection octaves (use 0 to do single scale)
+            float patternScale = 1.0f; // apply this scale to the pattern used for sampling the neighbourhood of a keypoint.
+
+            extractor = cv::BRISK::create(threshold, octaves, patternScale);
+        }else if(descriptorType.compare("BRIEF") == 0){
+            const int bytes = 32;
+            const bool use_orientation = false;
+            extractor = cv::xfeatures2d::BriefDescriptorExtractor::create(bytes, use_orientation);
+
+        }else if(descriptorType.compare("ORB") == 0){
+            const int nfeatures = 500;  // The maximum number of features to retain. 
+            const float scaleFactor = 1.2f; // Pyramid decimation ratio
+            const int nlevels = 8;   //  number of pyramid levels
+            const int edgeThreshold = 31; // size of the border where the features are not detected
+            const int firstLevel = 0; //  level of pyramid to put source image to
+            const int WTA_K = 2; //  level of pyramid to put source image to
+            const cv::ORB::ScoreType scoreType = cv::ORB::HARRIS_SCORE; //FAST_SCORE
+            const int patchSize = 31; // size of the patch used by the oriented BRIEF descriptor
+            const int fastThreshold = 20; //the fast threshold     
+            extractor = cv::ORB::create(nfeatures, scaleFactor, nlevels, edgeThreshold, 
+                                        firstLevel, WTA_K, scoreType, patchSize, fastThreshold);  
+
+        }else if(descriptorType.compare("FREAK") == 0){
+            const bool orientationNormalized = true;
+            const bool scaleNormalized = true;
+            const float patternScale = 22.0f;
+            const int nOctaves = 4;
+            extractor = cv::xfeatures2d::FREAK::create(orientationNormalized, scaleNormalized, patternScale, nOctaves);
+
+        }else if(descriptorType.compare("AKAZE") == 0){        
+            const cv::AKAZE::DescriptorType descriptor_type = cv::AKAZE::DESCRIPTOR_MLDB; // DESCRIPTOR_KAZE_UPRIGHT, DESCRIPTOR_MLDB_UPRIGHT, DESCRIPTOR_KAZE(rot invariant), DESCRIPTOR_MLDB (rot invariant) 
+            const int descriptor_size = 0; // Size of the descriptor in bits. 0 -> Full size 
+            const int descriptor_channels = 3; // Number of channels in the descriptor (1, 2, 3) 
+            const float threshold = 0.001f; // 	Detector response threshold to accept point
+            const int nOctaves = 4; 
+            const int nOctaveLayers = 4;
+            const cv::KAZE::DiffusivityType diffusivity = cv::KAZE::DIFF_PM_G2; // DIFF_PM_G1, DIFF_PM_G2, DIFF_WEICKERT or DIFF_CHARBONNIER 
+            extractor = cv::AKAZE::create(descriptor_type, descriptor_size, 
+                                        descriptor_channels, threshold, nOctaves, 
+                                        nOctaveLayers, diffusivity);
+
+        }else if(descriptorType.compare("SIFT") == 0){        
+            const int nfeatures = 0;
+            const int nOctaveLayers = 3;
+            const double contrastThreshold = 0.04;
+            const double edgeThreshold = 10;
+            const double sigma = 1.6;
+            extractor = cv::xfeatures2d::SIFT::create( nfeatures, nOctaveLayers, 
+                                            contrastThreshold,  edgeThreshold, sigma);
+        }else{        
+            throw runtime_error(descriptorType + " Keypoint descriptor not implemented");
+        }
+}
+void descKeypoints(vector<cv::KeyPoint> &keypoints, cv::Mat &img, cv::Mat &descriptors)
 {
-    // select appropriate descriptor
-    cv::Ptr<cv::DescriptorExtractor> extractor;
-    if (descriptorType.compare("BRISK") == 0)
-    {
-
-        int threshold = 30;        // FAST/AGAST detection threshold score.
-        int octaves = 3;           // detection octaves (use 0 to do single scale)
-        float patternScale = 1.0f; // apply this scale to the pattern used for sampling the neighbourhood of a keypoint.
-
-        extractor = cv::BRISK::create(threshold, octaves, patternScale);
-    }
-    else
-    {
-
-        //...
-    }
-
-    // perform feature description
-    double t = (double)cv::getTickCount();
     extractor->compute(img, keypoints, descriptors);
-    t = ((double)cv::getTickCount() - t) / cv::getTickFrequency();
-    cout << descriptorType << " descriptor extraction in " << 1000 * t / 1.0 << " ms" << endl;
 }
 
-void detKeypointsModern(std::vector<cv::KeyPoint> &keypoints, cv::Mat &img, std::string detectorType, bool bVis){
-    cv::Ptr<cv::FeatureDetector> detector;
-    if(detectorType.compare("FAST") == 0){
-        // Fast detector
-        const int threshold = 15; // difference between intensity of the central pixel and pixels of a circle around this pixel
-        const bool bNMS = true;   // perform non-maxima suppression on keypoints
-        const cv::FastFeatureDetector::DetectorType type = cv::FastFeatureDetector::TYPE_9_16; // TYPE_9_16, TYPE_7_12, TYPE_5_8
-        detector = cv::FastFeatureDetector::create(threshold, bNMS, type);
+cv::Ptr<cv::FeatureDetector> detector;
+void detKeypointsModernInit(std::string detectorType){
+if(detectorType.compare("FAST") == 0){        
+            // Fast detector
+            const int threshold = 15; // difference between intensity of the central pixel and pixels of a circle around this pixel
+            const bool bNMS = true;   // perform non-maxima suppression on keypoints
+            const cv::FastFeatureDetector::DetectorType type = cv::FastFeatureDetector::TYPE_9_16; // TYPE_9_16, TYPE_7_12, TYPE_5_8
+            detector = cv::FastFeatureDetector::create(threshold, bNMS, type);
 
-    }else if(detectorType.compare("BRISK")){
-        const int thresh = 30;
-        const int octaves = 3;
-        const float pattern_scale = 1.0;
-        detector = cv::BRISK::create(thresh, octaves, pattern_scale);
+        }else if(detectorType.compare("BRISK") == 0){        
+            const int thresh = 30;
+            const int octaves = 3;
+            const float pattern_scale = 1.0;
+            detector = cv::BRISK::create(thresh, octaves, pattern_scale);
 
-    }else if(detectorType.compare("AKAZE")){
-        const cv::AKAZE::DescriptorType descriptor_type = cv::AKAZE::DESCRIPTOR_MLDB; // DESCRIPTOR_KAZE_UPRIGHT, DESCRIPTOR_MLDB_UPRIGHT, DESCRIPTOR_KAZE(rot invariant), DESCRIPTOR_MLDB (rot invariant) 
-		const int descriptor_size = 0; // Size of the descriptor in bits. 0 -> Full size 
-		const int descriptor_channels = 1; // Number of channels in the descriptor (1, 2, 3) 
-		const float threshold = 0.001f; // 	Detector response threshold to accept point
-		const int nOctaves = 4; 
-		const int nOctaveLayers = 4;
-		const cv::KAZE::DiffusivityType diffusivity = cv::KAZE::DIFF_PM_G2; // DIFF_PM_G1, DIFF_PM_G2, DIFF_WEICKERT or DIFF_CHARBONNIER 
-        detector = cv::AKAZE::create(descriptor_type, descriptor_size, 
-                                     descriptor_channels, threshold, nOctaves, 
-                                     nOctaveLayers, diffusivity);
+        }else if(detectorType.compare("ORB") == 0){
+            const int nfeatures = 500;  // The maximum number of features to retain. 
+            const float scaleFactor = 1.2f; // Pyramid decimation ratio
+            const int nlevels = 8;   //  number of pyramid levels
+            const int edgeThreshold = 31; // size of the border where the features are not detected
+            const int firstLevel = 0; //  level of pyramid to put source image to
+            const int WTA_K = 2; //  level of pyramid to put source image to
+            const cv::ORB::ScoreType scoreType = cv::ORB::HARRIS_SCORE; //FAST_SCORE
+            const int patchSize = 31; // size of the patch used by the oriented BRIEF descriptor
+            const int fastThreshold = 20; //the fast threshold     
+            detector = cv::ORB::create(nfeatures, scaleFactor, nlevels, edgeThreshold, 
+                                        firstLevel, WTA_K, scoreType, patchSize, fastThreshold);  
 
-    }else if(detectorType.compare("SIFT")){
-        const int nfeatures = 0;
-		const int nOctaveLayers = 3;
-		const double contrastThreshold = 0.04;
-		const double edgeThreshold = 10;
-		const double sigma = 1.6;
-        detector = cv::xfeatures2d::SIFT::create( nfeatures, nOctaveLayers, 
-                                           contrastThreshold,  edgeThreshold, sigma);
-    }else{
-        throw runtime_error(detectorType + " Keypoint detector not implemented");
-    }
+        }else if(detectorType.compare("AKAZE") == 0){        
+            const cv::AKAZE::DescriptorType descriptor_type = cv::AKAZE::DESCRIPTOR_MLDB; // DESCRIPTOR_KAZE_UPRIGHT, DESCRIPTOR_MLDB_UPRIGHT, DESCRIPTOR_KAZE(rot invariant), DESCRIPTOR_MLDB (rot invariant) 
+            const int descriptor_size = 0; // Size of the descriptor in bits. 0 -> Full size 
+            const int descriptor_channels = 1; // Number of channels in the descriptor (1, 2, 3) 
+            const float threshold = 0.001f; // 	Detector response threshold to accept point
+            const int nOctaves = 4; 
+            const int nOctaveLayers = 4;
+            const cv::KAZE::DiffusivityType diffusivity = cv::KAZE::DIFF_PM_G2; // DIFF_PM_G1, DIFF_PM_G2, DIFF_WEICKERT or DIFF_CHARBONNIER 
+            detector = cv::AKAZE::create(descriptor_type, descriptor_size, 
+                                        descriptor_channels, threshold, nOctaves, 
+                                        nOctaveLayers, diffusivity);
 
+        }else if(detectorType.compare("SIFT") == 0){        
+            const int nfeatures = 0;
+            const int nOctaveLayers = 3;
+            const double contrastThreshold = 0.04;
+            const double edgeThreshold = 10;
+            const double sigma = 1.6;
+            detector = cv::xfeatures2d::SIFT::create( nfeatures, nOctaveLayers, 
+                                            contrastThreshold,  edgeThreshold, sigma);
+        }else{        
+            throw runtime_error(detectorType + " Keypoint detector not implemented");
+        }
+}
+
+void detKeypointsModern(std::vector<cv::KeyPoint> &keypoints, cv::Mat &img, bool bVis){
     detector->detect(img, keypoints, cv::Mat());
+ 
     // visualize results
     if (bVis)
     {
         cv::Mat visImage = img.clone();
         cv::drawKeypoints(img, keypoints, visImage, cv::Scalar::all(-1), cv::DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
-        string windowName = detectorType + " Corner Detector Results";
+        string windowName = " Corner Detector Results";
         cv::namedWindow(windowName, 6);
         imshow(windowName, visImage);
         cv::waitKey(0);
@@ -182,7 +257,7 @@ void detKeypointsShiTomasi(vector<cv::KeyPoint> &keypoints, cv::Mat &img, bool b
     double k = 0.04;
 
     // Apply corner detection
-    double t = (double)cv::getTickCount();
+    //double t = (double)cv::getTickCount();
     vector<cv::Point2f> corners;
     cv::goodFeaturesToTrack(img, corners, maxCorners, qualityLevel, minDistance, cv::Mat(), blockSize, false, k);
 
@@ -195,8 +270,8 @@ void detKeypointsShiTomasi(vector<cv::KeyPoint> &keypoints, cv::Mat &img, bool b
         newKeyPoint.size = blockSize;
         keypoints.push_back(newKeyPoint);
     }
-    t = ((double)cv::getTickCount() - t) / cv::getTickFrequency();
-    cout << "Shi-Tomasi detection with n=" << keypoints.size() << " keypoints in " << 1000 * t / 1.0 << " ms" << endl;
+    //t = ((double)cv::getTickCount() - t) / cv::getTickFrequency();
+    //cout << "Shi-Tomasi detection with n=" << keypoints.size() << " keypoints in " << 1000 * t / 1.0 << " ms" << endl;
 
     // visualize results
     if (bVis)
